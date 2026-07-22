@@ -1,0 +1,11 @@
+data/
+*.pt
+*.bin
+*.ckpt
+*.log
+*.jsonl
+
+__pycache__/
+.ipynb_checkpoints/
+
+.env
