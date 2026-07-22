@@ -69,9 +69,6 @@ def stream_extract_chunks(filepath, out_dir, max_docs=1000):
                     outfile = open_new_chunk(chunk_idx=chunk_idx, out_dir=out_dir)
 
                 doc_count += 1
-                if doc_count >= max_docs:
-                    break
-
                 if doc_count % 1000 == 0:
                     print(f"{doc_count} documents chunked")
 
