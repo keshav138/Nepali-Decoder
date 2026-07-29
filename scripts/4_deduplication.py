@@ -60,6 +60,20 @@ class BloomFilter:
         return already_present
 
 
+def seed_bloom_from_completed_file(bf: BloomFilter, path: str) -> int:
+    """Feed an already-completed output file's (deduplicated) lines back into
+    the bloom filter, so later files are still correctly deduplicated against
+    it without re-reading/re-cleaning the original input."""
+    count = 0
+    with open(path, 'r', encoding='utf-8') as f:
+        for line in f:
+            line = line.rstrip('\n')
+            if line:
+                bf.add_and_check(line)
+                count += 1
+    return count
+
+
 def dedup_all(cleaned_dir: str, output_dir: str, expected_lines: int,
               fp_rate: float = 0.01, pattern: str = "*_cleaned.txt",
               local_staging_dir: str = None):
@@ -76,26 +90,45 @@ def dedup_all(cleaned_dir: str, output_dir: str, expected_lines: int,
     for i, path in enumerate(files, 1):
         basename = os.path.basename(path)
         final_out_path = os.path.join(output_dir, basename)
+
+        if os.path.exists(final_out_path):
+            already_kept = seed_bloom_from_completed_file(bf, final_out_path)
+            kept += already_kept
+            print(f"[{i}/{len(files)}] {basename}: already done, skipping "
+                  f"(re-seeded {already_kept:,} lines into bloom filter)")
+            continue
+
         write_path = os.path.join(local_staging_dir, basename) if local_staging_dir else final_out_path
+        file_kept, file_dup = 0, 0
 
-        with open(path, 'r', encoding='utf-8') as fin, \
-             open(write_path, 'w', encoding='utf-8') as fout:
-            for line in fin:
-                total += 1
-                stripped = line.rstrip('\n')
-                if not stripped:
-                    continue
-                if bf.add_and_check(stripped):
-                    dup += 1
-                    continue
-                fout.write(stripped + '\n')
-                kept += 1
+        try:
+            with open(path, 'r', encoding='utf-8') as fin, \
+                 open(write_path, 'w', encoding='utf-8') as fout:
+                for line in fin:
+                    total += 1
+                    stripped = line.rstrip('\n')
+                    if not stripped:
+                        continue
+                    if bf.add_and_check(stripped):
+                        dup += 1
+                        file_dup += 1
+                        continue
+                    fout.write(stripped + '\n')
+                    kept += 1
+                    file_kept += 1
 
-        if local_staging_dir:
-            shutil.copy(write_path, final_out_path)
+            if local_staging_dir:
+                shutil.copy(write_path, final_out_path)
 
-        print(f"[{i}/{len(files)}] {basename} done "
-              f"(running totals - kept: {kept:,}, duplicates: {dup:,})")
+        except Exception as e:
+            print(f"  ERROR while processing {basename}: {e}")
+            print(f"  Discarding partial output for {basename} - it will be reprocessed from scratch on the next run.")
+            for p in (write_path, final_out_path):
+                if os.path.exists(p):
+                    os.remove(p)
+            raise
+
+        print(f"[{i}/{len(files)}] {basename} done (kept {file_kept:,}, duplicates {file_dup:,})")
 
     print(f"\nFinal: total lines {total:,}, kept {kept:,}, duplicates removed {dup:,}")
 
