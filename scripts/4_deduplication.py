@@ -18,7 +18,9 @@ Run this only after every teammate's Phase 1 range has finished.
 import os
 import glob
 import math
+import shutil
 import hashlib
+import argparse
 
 
 class BloomFilter:
@@ -59,8 +61,12 @@ class BloomFilter:
 
 
 def dedup_all(cleaned_dir: str, output_dir: str, expected_lines: int,
-              fp_rate: float = 0.01, pattern: str = "*_cleaned.txt"):
+              fp_rate: float = 0.01, pattern: str = "*_cleaned.txt",
+              local_staging_dir: str = None):
     os.makedirs(output_dir, exist_ok=True)
+    if local_staging_dir:
+        os.makedirs(local_staging_dir, exist_ok=True)
+
     bf = BloomFilter(n_items=expected_lines, fp_rate=fp_rate)
 
     files = sorted(glob.glob(os.path.join(cleaned_dir, pattern)))
@@ -68,9 +74,12 @@ def dedup_all(cleaned_dir: str, output_dir: str, expected_lines: int,
 
     total, kept, dup = 0, 0, 0
     for i, path in enumerate(files, 1):
-        out_path = os.path.join(output_dir, os.path.basename(path))
+        basename = os.path.basename(path)
+        final_out_path = os.path.join(output_dir, basename)
+        write_path = os.path.join(local_staging_dir, basename) if local_staging_dir else final_out_path
+
         with open(path, 'r', encoding='utf-8') as fin, \
-             open(out_path, 'w', encoding='utf-8') as fout:
+             open(write_path, 'w', encoding='utf-8') as fout:
             for line in fin:
                 total += 1
                 stripped = line.rstrip('\n')
@@ -81,20 +90,35 @@ def dedup_all(cleaned_dir: str, output_dir: str, expected_lines: int,
                     continue
                 fout.write(stripped + '\n')
                 kept += 1
-        print(f"[{i}/{len(files)}] {os.path.basename(path)} done "
+
+        if local_staging_dir:
+            shutil.copy(write_path, final_out_path)
+
+        print(f"[{i}/{len(files)}] {basename} done "
               f"(running totals - kept: {kept:,}, duplicates: {dup:,})")
 
     print(f"\nFinal: total lines {total:,}, kept {kept:,}, duplicates removed {dup:,}")
 
 
 if __name__ == '__main__':
-    # expected_lines: rough total across all cleaned files - overestimating
-    # is safe (slightly bigger filter), underestimating raises your false
-    # positive rate. ~1.1M lines/file x 200 files ~= 220M before cleaning;
-    # use that as the ceiling even though cleaning drops some lines.
+    parser = argparse.ArgumentParser(description="Phase 2: global deduplication (Bloom filter)")
+    parser.add_argument('--cleaned_dir', required=True,
+                         help='folder containing ALL teammates\' Phase 1 *_cleaned.txt output')
+    parser.add_argument('--output_dir', required=True,
+                         help='where the final deduplicated files are written')
+    parser.add_argument('--expected_lines', type=int, default=220_000_000,
+                         help='rough total line count across all cleaned files (safe to overestimate)')
+    parser.add_argument('--fp_rate', type=float, default=0.01,
+                         help='Bloom filter target false-positive rate')
+    parser.add_argument('--local_staging_dir', default=None,
+                         help='optional local dir (e.g. /content/staging) to write to before '
+                              'copying to output_dir - recommended when output_dir is a Drive mount')
+    args = parser.parse_args()
+
     dedup_all(
-        cleaned_dir='chunks_cleaned',
-        output_dir='chunks_deduped',
-        expected_lines=220_000_000,
-        fp_rate=0.01,
+        cleaned_dir=args.cleaned_dir,
+        output_dir=args.output_dir,
+        expected_lines=args.expected_lines,
+        fp_rate=args.fp_rate,
+        local_staging_dir=args.local_staging_dir,
     )
